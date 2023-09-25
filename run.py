@@ -1,10 +1,11 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
+
 import src.tradingview_ws as td
 
 
-def callbackFunc(datas):
-    print(len(datas), datas[len(datas)-1])
+def callbackFunc(s):
+    print(s)
 
 
 if __name__ == "__main__":
@@ -13,6 +14,4 @@ if __name__ == "__main__":
     username = "test"
     password = "test"
     trading = td.TradingViewWs(pair, market, username, password)
-    interval = 5
-    total_candle = 240
-    trading.realtime_bar_chart(interval, total_candle, callbackFunc)
+    trading.realtime_quote(callbackFunc)

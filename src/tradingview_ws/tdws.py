@@ -1,29 +1,33 @@
 from __future__ import print_function
 
-import requests,random, json, re, string
-from websocket import create_connection
-
+import re
+import time
 import json
 import random
 import string
-import re
+import requests
+import threading
+from websocket import create_connection
+from src.tradingview_ws.colorful_print import ColorfulPrint as cp
+
 import pandas as pd
 from datetime import datetime
 from time import localtime
 
-
 _API_URL_ = 'https://symbol-search.tradingview.com/symbol_search'
 _WS_URL_ = "wss://data.tradingview.com/socket.io/websocket"
 
+
 class TradingViewWs():
-    def __init__(self, ticker, market, username = None, password = None):
+    def __init__(self, ticker, market, username=None, password=None):
         self.ticker = ticker.upper()
         self.market = market
         self._ws_url = _WS_URL_
         self._api_url = _API_URL_
         self.token = self.get_auth_token(username, password)
+        if (self.token == ''):
+            self.token = "unauthorized_user_token"
         self.datas = []
-
 
     def get_auth_token(self, username, password):
         if not username or not password:
@@ -57,7 +61,8 @@ class TradingViewWs():
     def generate_session(self, type):
         string_length = 12
         letters = string.ascii_lowercase
-        random_string = "".join(random.choice(letters) for i in range(string_length))
+        random_string = "".join(random.choice(letters)
+                                for i in range(string_length))
         return type + random_string
 
     def prepend_header(self, st):
@@ -70,7 +75,9 @@ class TradingViewWs():
         return self.prepend_header(self.construct_message(func, paramList))
 
     def send_message(self, ws, func, args):
-        ws.send(self.create_message(func, args))
+        mess = self.create_message(func, args)
+        cp.print_green(mess)
+        ws.send(mess)
 
     def send_ping_packet(self, ws, result):
         ping_str = re.findall(".......(.*)", result)
@@ -82,12 +89,11 @@ class TradingViewWs():
         while True:
             try:
                 result = ws.recv()
-
+                cp.print_red(result)
                 if "quote_completed" in result or "session_id" in result:
                     continue
 
                 res = re.findall("^.*?({.*)$", result)
-
                 if len(res) != 0:
                     jsonres = json.loads(res[0])
 
@@ -102,61 +108,6 @@ class TradingViewWs():
                 break
             except:
                 continue
-
-    def socket_bar_chart(self, ws, interval, callback):
-        while True:
-            try:
-                result = ws.recv()
-
-                if not result or "quote_completed" in result or "session_id" in result:
-                    continue
-
-                out = re.search('"s":\[(.+?)\}\]', result)
-                if not out:
-                    continue
-
-                out = out.group(1)
-
-                items = out.split(',{\"')
-
-                if len(items) != 0:
-                    datas = []
-                    for item in items:
-                        item = re.split('\[|:|,|\]', item)
-                        ind = int(item[1])
-
-                        ts = datetime.fromtimestamp(float(item[4])).strftime("%s")
-                        s = {"datetime": float(item[4]), "open": float(item[5]), "high": float(item[6]), "low": float(item[7]), "close": float(item[8]), "volume": float(item[9])}
-
-                        datas.append(s)
-
-                    if len(datas):
-                        if not len(self.datas):
-                            self.datas = datas
-                        else:
-                            l = len(self.datas)
-                            dt = float(datetime.fromtimestamp(float(self.datas[l - 1]['datetime'])).strftime("%s"))
-
-                            for item in datas:
-                                dt2 = float(datetime.fromtimestamp(float(item['datetime'])).strftime("%s"))
-                                if dt == dt2:
-                                    self.datas[l - 1] = item
-                                elif dt < dt2:
-                                    self.datas.append(item)
-                                    l = l + 1
-
-                    callback(self.datas)
-                else:
-                    # ping packet
-                    print("................retry")
-                    self.send_ping_packet(ws, interval, result)
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print("=========except", datetime.now(), e)
-                if ('closed' in str(e) or 'lost' in str(e)):
-                    print("=========try")
-                    self.realtime_bar_chart(5, 1, callback)
 
     def get_symbol_id(self, pair, market):
         data = self.search(pair, market)
@@ -179,12 +130,16 @@ class TradingViewWs():
         session = self.generate_session("qs_")
 
         # Send messages
+        self.send_message(ws, "set_data_quality", ["low"])
         if self.token:
             self.send_message(ws, "set_auth_token", [self.token])
         else:
-            self.send_message(ws, "set_auth_token", ["unauthorized_user_token"])
+            self.send_message(ws, "set_auth_token", [
+                              "unauthorized_user_token"])
+        self.send_message(ws, "set_locale", ["en", "US"])
 
         self.send_message(ws, "quote_create_session", [session])
+
         self.send_message(ws, "quote_set_fields", [session, "lp"])
         self.send_message(ws, "quote_add_symbols", [session, symbol_id])
 
@@ -192,38 +147,157 @@ class TradingViewWs():
         self.socket_quote(ws, callback)
 
     def realtime_bar_chart(self, interval, total_candle, callback):
+        recived_data = []
         # serach btcusdt from crypto category
         symbol_id = self.get_symbol_id(self.ticker, self.market)
 
-        # create tunnel
-        headers = json.dumps({"Origin": "https://data.tradingview.com"})
-        ws = create_connection(self._ws_url, headers=headers)
+        # create sessions
         session = self.generate_session("qs_")
         chart_session = self.generate_session("cs_")
 
+        # connect to websocket
+        headers = json.dumps({"Origin": "https://data.tradingview.com"})
+        ws = create_connection(self._ws_url, headers=headers)
+
+        def receive_thread():
+            while True:
+                try:
+                    result = ws.recv()
+                    cp.print_yellow(result)
+                    recived_data.append(result)
+                    if not result or "quote_completed" in result or "session_id" in result:
+                        continue
+
+                    if re.search(r'~m~(\d+)~m~~h~(\d+)', result):
+                        ws.send(result)
+                        continue
+
+                    out = re.search('"s":\[(.+?)\}\]', result)
+                    if not out:
+                        continue
+                    cp.print_red(out)
+                    out = out.group(1)
+
+                    items = out.split(',{\"')
+
+                    if len(items) != 0:
+                        datas = []
+                        for item in items:
+                            item = re.split('\[|:|,|\]', item)
+                            ind = int(item[1])
+
+                            ts = datetime.fromtimestamp(
+                                float(item[4])).strftime("%s")
+                            s = {"datetime": float(item[4]), "open": float(item[5]), "high": float(
+                                item[6]), "low": float(item[7]), "close": float(item[8]), "volume": float(item[9])}
+
+                            datas.append(s)
+
+                        if len(datas):
+                            if not len(self.datas):
+                                self.datas = datas
+                            else:
+                                l = len(self.datas)
+                                dt = float(datetime.fromtimestamp(
+                                    float(self.datas[l - 1]['datetime'])).strftime("%s"))
+
+                                for item in datas:
+                                    dt2 = float(datetime.fromtimestamp(
+                                        float(item['datetime'])).strftime("%s"))
+                                    if dt == dt2:
+                                        self.datas[l - 1] = item
+                                    elif dt < dt2:
+                                        self.datas.append(item)
+                                        l = l + 1
+
+                        callback(self.datas)
+                    else:
+                        print("................retry")
+                        self.send_ping_packet(ws, interval, result)
+                except KeyboardInterrupt:
+                    break
+                except Exception as e:
+                    print("=========except", datetime.now(), e)
+                    if ('closed' in str(e) or 'lost' in str(e)):
+                        print("=========try")
+                        self.realtime_bar_chart(5, 1, callback)
+
+        # Start the receive thread
+        receive_thread = threading.Thread(target=receive_thread)
+        # Set as a daemon thread to exit when the main program exits
+        receive_thread.daemon = True
+        receive_thread.start()
+
         # Then send a message through the tunnel
-        if self.token:
-            self.send_message(ws, "set_auth_token", [self.token])
-        else:
-            self.send_message(ws, "set_auth_token", ["unauthorized_user_token"])
-
-        self.send_message(ws, "chart_create_session", [chart_session, ""])
-        self.send_message(ws, "quote_create_session", [session])
-        self.send_message(ws, "switch_timezone", [chart_session, "Etc/UTC"])
-        self.send_message(ws, "quote_set_fields",
-                    [session, "ch", "chp", "current_session", "description", "local_description", "language",
-                     "exchange",
-                     "fractional", "is_tradable", "lp", "lp_time", "minmov", "minmove2", "original_name", "pricescale",
-                     "pro_name", "short_name", "type", "update_mode", "volume", "currency_code", "rchp", "rtc"])
-        #self.send_message(ws, "quote_add_symbols", [session, symbol_id, {"flags": ['force_permission']}])
-        #self.send_message(ws, "quote_fast_symbols", [session, symbol_id])
-
-        # st='~m~140~m~{"m":"resolve_symbol","p":}'
-        # p1, p2 = filter_raw_message(st)
-        self.send_message(ws, "resolve_symbol", [chart_session, "symbol_1",
-                                           "={\"symbol\":\""+symbol_id+"\",\"adjustment\":\"splits\",\"session\":\"extended\"}"])
-        self.send_message(ws, "create_series", [chart_session, "s1", "s1", "symbol_1", str(interval), total_candle])
-        # self.send_message(ws, "create_study", [chart_session,"st4","st1","s1","ESD@tv-scripting-101!",{"text":"BNEhyMp2zcJFvntl+CdKjA==_DkJH8pNTUOoUT2BnMT6NHSuLIuKni9D9SDMm1UOm/vLtzAhPVypsvWlzDDenSfeyoFHLhX7G61HDlNHwqt/czTEwncKBDNi1b3fj26V54CkMKtrI21tXW7OQD/OSYxxd6SzPtFwiCVAoPbF2Y1lBIg/YE9nGDkr6jeDdPwF0d2bC+yN8lhBm03WYMOyrr6wFST+P/38BoSeZvMXI1Xfw84rnntV9+MDVxV8L19OE/0K/NBRvYpxgWMGCqH79/sHMrCsF6uOpIIgF8bEVQFGBKDSxbNa0nc+npqK5vPdHwvQuy5XuMnGIqsjR4sIMml2lJGi/XqzfU/L9Wj9xfuNNB2ty5PhxgzWiJU1Z1JTzsDsth2PyP29q8a91MQrmpZ9GwHnJdLjbzUv3vbOm9R4/u9K2lwhcBrqrLsj/VfVWMSBP","pineId":"TV_SPLITS","pineVersion":"8.0"}])
-
-        # Start job
-        self.socket_bar_chart(ws, interval, callback)
+        messages = []
+        messages.append(["set_auth_token", [self.token]])
+        messages.append(["set_locale", ["en", "US"]])
+        messages.append(["chart_create_session", [chart_session, ""]])
+        messages.append(["switch_timezone", [
+            chart_session, "America/Vancouver"
+        ]])
+        messages.append(["switch_timezone", [
+            chart_session, "America/Vancouver"
+        ]])
+        messages.append(["quote_create_session", [session]])
+        data = "={\"adjustment\":\"splits\",\"session\":\"extended\",\"settlement-as-close\":false,\"symbol\":\"" + symbol_id + "\"}"
+        messages.append(["quote_add_symbols", [session, data]])
+        messages.append(["resolve_symbol", [
+            chart_session, "sds_sym_1", data
+        ]])
+        messages.append(["create_series", [
+            chart_session, "sds_1", "s1", "sds_sym_1", "1S", 300, ""
+        ]])
+        messages.append(["quote_set_fields", [
+            session,
+            "ch",
+            "chp",
+            "current_session",
+            "description",
+            "local_description",
+            "language",
+            "exc hange",
+            "fractional",
+            "is_tradable",
+            "lp",
+            "lp_time",
+            "minmov",
+            "minmove2",
+            "original_name",
+            "pricescale",
+            "pro_name",
+            "short_name",
+            "type",
+            "update_mode",
+            "volume",
+            "currency_code",
+            "rchp",
+            "rtc"
+        ]])
+        messages.append(["quote_add_symbols", [session, symbol_id]])
+        messages.append(["quote_fast_symbols", [session, data]])
+        messages.append(["quote_fast_symbols", [session, symbol_id]])
+        temp = "={\"symbol\":\"" + symbol_id + \
+            "\",\"adjustment\":\"splits\",\"session\":\"extended\"}"
+        messages.append(["resolve_symbol", [
+            chart_session, "symbol_1", temp
+        ]])
+        messages.append(["request_more_tickmarks", [
+            chart_session,
+            "sds_1",
+            10
+        ]])
+        messages.append(["request_more_data", [
+            chart_session,
+            "sds_1",
+            734
+        ]])
+        while True:
+            try:
+                for mess in messages:
+                    self.send_message(ws, mess[0], mess[1])
+                    time.sleep(0.2)
+                messages = []
+                time.sleep(0.5)
+            except KeyboardInterrupt:
+                break
