@@ -24,7 +24,8 @@ class TradingViewWs():
         self.market = market
         self._ws_url = _WS_URL_
         self._api_url = _API_URL_
-        self.token = self.get_auth_token(username, password)
+        # self.token = self.get_auth_token(username, password)
+        self.token = ""
         if (self.token == ''):
             self.token = "unauthorized_user_token"
         self.datas = []
@@ -147,7 +148,6 @@ class TradingViewWs():
         self.socket_quote(ws, callback)
 
     def realtime_bar_chart(self, interval, total_candle, callback):
-        recived_data = []
         # serach btcusdt from crypto category
         symbol_id = self.get_symbol_id(self.ticker, self.market)
 
@@ -163,57 +163,48 @@ class TradingViewWs():
             while True:
                 try:
                     result = ws.recv()
-                    cp.print_yellow(result)
-                    recived_data.append(result)
-                    if not result or "quote_completed" in result or "session_id" in result:
-                        continue
-
                     if re.search(r'~m~(\d+)~m~~h~(\d+)', result):
                         ws.send(result)
                         continue
-
-                    out = re.search('"s":\[(.+?)\}\]', result)
-                    if not out:
+                    result = re.split(r'~m~', result)
+                    result = [res for res in result if len(res) > 0]
+                    result = result[1::2]
+                    cp.print_blue("\n\n".join(result))
+                    if not result:
                         continue
-                    cp.print_red(out)
-                    out = out.group(1)
 
-                    items = out.split(',{\"')
+                    for item in result:
+                        data = json.loads(item)
+                        if ("session_id" in data):
+                            continue
 
-                    if len(items) != 0:
-                        datas = []
-                        for item in items:
-                            item = re.split('\[|:|,|\]', item)
-                            ind = int(item[1])
-
-                            ts = datetime.fromtimestamp(
-                                float(item[4])).strftime("%s")
-                            s = {"datetime": float(item[4]), "open": float(item[5]), "high": float(
-                                item[6]), "low": float(item[7]), "close": float(item[8]), "volume": float(item[9])}
-
-                            datas.append(s)
-
-                        if len(datas):
-                            if not len(self.datas):
-                                self.datas = datas
-                            else:
-                                l = len(self.datas)
-                                dt = float(datetime.fromtimestamp(
-                                    float(self.datas[l - 1]['datetime'])).strftime("%s"))
-
-                                for item in datas:
-                                    dt2 = float(datetime.fromtimestamp(
-                                        float(item['datetime'])).strftime("%s"))
-                                    if dt == dt2:
-                                        self.datas[l - 1] = item
-                                    elif dt < dt2:
-                                        self.datas.append(item)
-                                        l = l + 1
-
-                        callback(self.datas)
-                    else:
-                        print("................retry")
-                        self.send_ping_packet(ws, interval, result)
+                        if ('m' not in data):
+                            print(data)
+                            pass
+                        method = data['m']
+                        if method == "qsd":
+                            session, temp = data["p"]
+                            n = temp["n"]
+                            s = temp["s"]
+                            v = temp["v"]
+                            pass
+                        elif method == "du":
+                            pass
+                        elif method == "quote_completed":
+                            session, temp = data["p"]
+                            pass
+                        elif method == "timescale_update":
+                            temp = data["p"]
+                            pass
+                        elif method == "symbol_resolved":
+                            session, sym_id, temp = data["p"]
+                            pass
+                        elif method == "series_loading":
+                            pass
+                        elif method == "series_completed":
+                            pass
+                        else:
+                            pass
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
