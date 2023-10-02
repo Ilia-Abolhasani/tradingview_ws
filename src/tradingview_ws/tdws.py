@@ -8,8 +8,8 @@ import string
 import requests
 import threading
 from websocket import create_connection
-from src.tradingview_ws.colorful_print import ColorfulPrint as cp
-from src.tradingview_ws.dot_dict import DotDict
+from .colorful_print import ColorfulPrint as cp
+from .dot_dict import DotDict
 
 import pandas as pd
 from datetime import datetime
