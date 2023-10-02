@@ -9,6 +9,7 @@ import requests
 import threading
 from websocket import create_connection
 from src.tradingview_ws.colorful_print import ColorfulPrint as cp
+from src.tradingview_ws.dot_dict import DotDict
 
 import pandas as pd
 from datetime import datetime
@@ -19,11 +20,13 @@ _WS_URL_ = "wss://data.tradingview.com/socket.io/websocket"
 
 
 class TradingViewWs():
-    def __init__(self, ticker, username=None, password=None):
+    def __init__(self, username=None, password=None, token=None):
         self._ws_url = _WS_URL_
         self._api_url = _API_URL_
-        # self.token = self.get_auth_token(username, password)
-        self.token = ""
+        if token:
+            self.token = token
+        else:
+            self.token = self.get_auth_token(username, password)
         if (self.token == ''):
             self.token = "unauthorized_user_token"
         self.ws = None
@@ -87,7 +90,8 @@ class TradingViewWs():
                     self.send_message("set_data_quality", ["low"])
                     self.send_message("quote_create_session", [session])
                     self.send_message("set_data_quality", ["low"])
-                    self.send_message("quote_set_fields", [session, "lp"])
+                    self.send_message("quote_set_fields", [
+                                      session, "lp", "lp_time", "pricescale"])
                     symbols_id = [sym.id for sym in symbols]
                     self.send_message("quote_add_symbols", [
                                       session, *symbols_id])
@@ -112,8 +116,14 @@ class TradingViewWs():
                     method = json_res['m']
                     if method == "qsd":
                         symbol = json_res["p"][1]["n"]
-                        price = json_res["p"][1]["v"]["lp"]
-                        callback({"symbol": symbol, "price": price})
+                        info = json_res["p"][1]["v"]
+                        lp = info["lp"]
+                        lp_time = info["lp_time"]
+                        callback(DotDict({
+                            "symbol": symbol,
+                            "time": lp_time,
+                            "price": lp,
+                        }))
             except KeyboardInterrupt:
                 break
             except Exception as e:
